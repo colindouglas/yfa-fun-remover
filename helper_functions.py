@@ -1,10 +1,10 @@
 import csv
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
-import json
+import pickle
 from datetime import datetime
 
-def update_oauth(path='oauth2.json'):
+def update_oauth(path='oauth2.p'):
 
     """
     Authenticates with Yahoo and creates session context from local secrets file.
@@ -15,19 +15,24 @@ def update_oauth(path='oauth2.json'):
     ex: get_oauth()
     ex: get_oauth(path='secrets/oauth.json')
     """
+    try:
+        token = pickle.load(open(path, "rb"))
+        if token.token_is_valid():
+            return token
+    except FileNotFoundError:
+        pass
 
     with open('../secrets.csv') as secrets_file:
         reader = csv.reader(secrets_file)
         for row in reader:
             if row[0] == 'yahoo_old':
-                yahoo_creds = {'consumer_key': row[1], 'consumer_secret': row[2]}
+                consumer_key = row[1]
+                consumer_secret = row[2]
             else:
                 pass
-
-    with open(path, "w") as f:
-        f.write(json.dumps(yahoo_creds))
-
-    return OAuth2(None, None, from_file=path)
+    token = OAuth2(consumer_key, consumer_secret)
+    pickle.dump(token, open(path, "wb"))
+    return token
 
 
 def get_league_key(oauth, code: str, league_name: str = None) -> dict:
