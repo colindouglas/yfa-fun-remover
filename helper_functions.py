@@ -2,40 +2,48 @@ import csv
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
 import pickle
+import logging
 from datetime import datetime
 
-def update_oauth(path='oauth2.p'):
+
+def update_oauth(path: str = 'oauth2.p') -> OAuth2:
 
     """
     Authenticates with Yahoo and creates session context from local secrets file.
     Returns an OAuth2 object for use in future calls
 
-    path - where to save the oauth token, defaults to ./oauth2.json
+    path - where to save the oauth token, defaults to ./oauth2.p
 
     ex: get_oauth()
-    ex: get_oauth(path='secrets/oauth.json')
+    ex: get_oauth(path='secrets/oauth.p')
     """
+
+    logging.getLogger('yahoo_oauth').disabled = True
+
     try:
-        token = pickle.load(open(path, "rb"))
-        if token.token_is_valid():
-            return token
+        oauth = pickle.load(open(path, "rb"))
+        if oauth.token_is_valid():
+            return oauth
+        else:
+            oauth.refresh_access_token()
+            # https://github.com/josuebrunel/yahoo-oauth/issues/55#issuecomment-602217706
+            oauth.session = oauth.oauth.get_session(token=oauth.access_token)
+            # Apparently this is a bug
+            pickle.dump(oauth, open(path, "wb"))
+            return oauth
     except FileNotFoundError:
-        pass
-
-    with open('../secrets.csv') as secrets_file:
-        reader = csv.reader(secrets_file)
-        for row in reader:
-            if row[0] == 'yahoo_old':
-                consumer_key = row[1]
-                consumer_secret = row[2]
-            else:
-                pass
-    token = OAuth2(consumer_key, consumer_secret)
-    pickle.dump(token, open(path, "wb"))
-    return token
+        with open('../secrets.csv') as secrets_file:
+            reader = csv.reader(secrets_file)
+            for row in reader:
+                if row[0] == 'yahoo_old':
+                    consumer_key = row[1]
+                    consumer_secret = row[2]
+        oauth = OAuth2(consumer_key, consumer_secret)
+        pickle.dump(oauth, open(path, "wb"))
+        return oauth
 
 
-def get_league_key(oauth, code: str, league_name: str = None) -> dict:
+def get_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
 
     """
     Get the key of a league by name
@@ -67,4 +75,5 @@ def get_league_key(oauth, code: str, league_name: str = None) -> dict:
                 return details['league_key']
             print("Can't find league '{}'".format(league_name))
             return {}
+
 
