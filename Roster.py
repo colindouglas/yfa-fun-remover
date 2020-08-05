@@ -9,6 +9,8 @@ from unidecode import unidecode
 from datetime import datetime
 import numpy as np
 
+LEAGUE = "Chemical Hydrolysis League"  # League to optimize
+
 
 def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
     """
@@ -81,16 +83,16 @@ def update_oauth(path='oauth.json') -> OAuth2:
 
 class Roster:
 
-    def __init__(self, league_key, oauth_path="oauth2.p"):
+    def __init__(self, league_key, oauth_path="oauth.json"):
 
         # Create and confirm that OAuth2 token is updated
-        self.oauth_path = oauth_path
-        self.oauth = update_oauth()
+        self.oauth = update_oauth(oauth_path)
         assert self.oauth.token_is_valid()
 
         # Create the Yahoo Fantasy abstraction
         self.league_key = league_key
         self.league = yfa.league.League(self.oauth, league_key)
+        self.positions = self.league.positions()
         self.team = yfa.team.Team(self.oauth, self.league.team_key())
         self.when = self.league.edit_date()  # The next time the roster can be edited
 
@@ -103,10 +105,12 @@ class Roster:
             "data/proj_steamer_2020_b.csv"  # Batter projections
         ).append(pd.read_csv(
             "data/proj_steamer_2020_p.csv"))  # Pitcher projections
+
         # If there are two players with the same name, only keep the
         # the player with the most projected ABs or IPs
         player_values = player_values.sort_values(by=['AB', 'IP'])
         player_values = player_values.drop_duplicates(subset=['Name'], keep='last')
+
         # Clean up the names
         player_values['name'] = player_values['Name'].map(self.cleanup_name)
         self.player_values = player_values.set_index('name')[['WAR']]
@@ -124,8 +128,6 @@ class Roster:
 
         # Determine whether each player on the roster is playing
         self.roster['is_playing'] = [self._is_playing(player) for player in self.roster.index]
-
-        self.positions = self.league.positions()
 
     @staticmethod
     def cleanup_name(x: str) -> str:
@@ -149,7 +151,7 @@ class Roster:
             and "teams" containing teams that are playing
         """
 
-        # Get probable starters
+        # Translate between the names GameDay uses (keys) and the names YF uses (values)
         abbrevs = {
             "Braves": "Atl",
             "Marlins": "Mia",
@@ -210,9 +212,9 @@ class Roster:
         Determines whether a player is playing, based on the probables
         :param player: the name of a player
         :return: a quasi-boolean:
-             0 if not playing
+             0 if not playing or day-to-day
              1 if playing
-            -1 if injured
+            -1 if on the IL or NA list
         """
 
         _, status, _, elig, _, _, _team, *_ = self.roster.loc[player, ]
@@ -312,7 +314,7 @@ class Roster:
 
 if __name__ == "__main__":
     token = update_oauth()
-    key = find_league_key(token, 'mlb', "Chemical Hydrolysis League")
+    key = find_league_key(token, 'mlb', LEAGUE)
     ros = Roster(key)
     opt = ros.optimize_lineup()
     ros.set_lineup(opt)
