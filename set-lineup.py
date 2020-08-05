@@ -1,3 +1,5 @@
+#!/home/colin/projects/yahoo-fantasy/venv/bin/python3
+
 import csv
 import json
 from yahoo_oauth import OAuth2
@@ -308,6 +310,7 @@ class Roster:
             try:
                 self.team.change_positions(self.when, [pos])
                 print("Success: {player_id} to {selected_position}".format(**pos))
+            # Sometimes this works but inexplicably returns an error from the API anyway
             except RuntimeError:
                 print("Failed (?): {player_id} to {selected_position}".format(**pos))
 
