@@ -1,6 +1,7 @@
 from Roster import Roster
-from helper_functions import update_oauth
 
-oauth = update_oauth()
+roster = Roster('398.l.29377')
 
-roster = Roster(oauth, '398.l.29377')
+lineup = roster.optimize_lineup()
+
+roster.set_lineup(lineup)
