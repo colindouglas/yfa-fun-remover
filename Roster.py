@@ -1,6 +1,6 @@
 import csv
+import json
 from yahoo_oauth import OAuth2
-import pickle
 import logging
 import mlbgame
 import yahoo_fantasy_api as yfa
@@ -10,13 +10,82 @@ from datetime import datetime
 import numpy as np
 
 
+def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
+    """
+    Get the key of a league by name
+
+    oauth - Fully constructed session context (see get_auth())
+    code - Sports code for the league you're looking for (e.g., 'mlb' or 'nfl')
+    league_name - The name of the league you're looking for. If no league name is
+             passed, will print the names of the leagues and return an empty dictionary
+
+    ex: get_league_details(oauth, code="nfl")
+    ex: get_league_details(oauth, code="mlb", league_name="Neato Keeper League")
+    """
+
+    this_year = datetime.today().year
+    game = yfa.game.Game(oauth, code)
+    league_ids = game.league_ids(this_year)
+
+    if league_name is None:
+        for league_id in league_ids:
+            league = game.to_league(league_id)
+            details = league.settings()
+            print('League: {name} // Key: {league_key}'.format(**details))
+            return ""
+    else:
+        for league_id in league_ids:
+            league = game.to_league(league_id)
+            details = league.settings()
+            if details['name'] == league_name:
+                return details['league_key']
+            print("Can't find league '{}'".format(league_name))
+            return ""
+
+
+def update_oauth(path='oauth.json') -> OAuth2:
+    """
+    Authenticates with Yahoo and creates session context from local secrets file.
+    Returns an OAuth2 object for use in future calls
+
+    path - where to save the oauth token, defaults to ./oauth.json
+
+    ex: get_oauth()
+    ex: get_oauth(path='secrets/oauth.p')
+    """
+
+    logging.getLogger('yahoo_oauth').disabled = True
+
+    try:
+        oauth = OAuth2(None, None, from_file=path)
+        if oauth.token_is_valid():
+            return oauth
+        else:
+            oauth.refresh_access_token()
+            # https://github.com/josuebrunel/yahoo-oauth/issues/55#issuecomment-602217706
+            oauth.session = oauth.oauth.get_session(token=oauth.access_token)
+            # Apparently this is a bug
+            return oauth
+    except FileNotFoundError:
+        with open('../secrets.csv') as secrets_file:
+            reader = csv.reader(secrets_file)
+            for row in reader:
+                if row[0] == 'yahoo_old':
+                    consumer_key = row[1]
+                    consumer_secret = row[2]
+        credentials = {'consumer_key': consumer_key, 'consumer_secret': consumer_secret}
+        with open(path, "w") as f:
+            f.write(json.dumps(credentials))
+        return OAuth2(None, None, from_file=path)
+
+
 class Roster:
 
     def __init__(self, league_key, oauth_path="oauth2.p"):
 
         # Create and confirm that OAuth2 token is updated
         self.oauth_path = oauth_path
-        self.oauth = self.update_oauth()
+        self.oauth = update_oauth()
         assert self.oauth.token_is_valid()
 
         # Create the Yahoo Fantasy abstraction
@@ -57,76 +126,6 @@ class Roster:
         self.roster['is_playing'] = [self._is_playing(player) for player in self.roster.index]
 
         self.positions = self.league.positions()
-
-    @staticmethod
-    def get_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
-
-        """
-        Get the key of a league by name
-
-        oauth - Fully constructed session context (see get_auth())
-        code - Sports code for the league you're looking for (e.g., 'mlb' or 'nfl')
-        league_name - The name of the league you're looking for. If no league name is
-                 passed, will print the names of the leagues and return an empty dictionary
-
-        ex: get_league_details(oauth, code="nfl")
-        ex: get_league_details(oauth, code="mlb", league_name="Neato Keeper League")
-        """
-
-        this_year = datetime.today().year
-        game = yfa.game.Game(oauth, code)
-        league_ids = game.league_ids(this_year)
-
-        if league_name is None:
-            for league_id in league_ids:
-                league = game.to_league(league_id)
-                details = league.settings()
-                print('League: {name} // Key: {league_key}'.format(**details))
-                return ""
-        else:
-            for league_id in league_ids:
-                league = game.to_league(league_id)
-                details = league.settings()
-                if details['name'] == league_name:
-                    return details['league_key']
-                print("Can't find league '{}'".format(league_name))
-                return ""
-
-    def update_oauth(self) -> OAuth2:
-
-        """
-        Authenticates with Yahoo and creates session context from local secrets file.
-        Returns an OAuth2 object for use in future calls
-
-        path - where to save the oauth token, defaults to ./oauth2.p
-
-        ex: get_oauth()
-        ex: get_oauth(path='secrets/oauth.p')
-        """
-
-        logging.getLogger('yahoo_oauth').disabled = True
-
-        try:
-            oauth = pickle.load(open(self.oauth_path, "rb"))
-            if oauth.token_is_valid():
-                return oauth
-            else:
-                oauth.refresh_access_token()
-                # https://github.com/josuebrunel/yahoo-oauth/issues/55#issuecomment-602217706
-                oauth.session = oauth.oauth.get_session(token=oauth.access_token)
-                # Apparently this is a bug
-                pickle.dump(oauth, open(self.oauth_path, "wb"))
-                return oauth
-        except FileNotFoundError:
-            with open('../secrets.csv') as secrets_file:
-                reader = csv.reader(secrets_file)
-                for row in reader:
-                    if row[0] == 'yahoo_old':
-                        consumer_key = row[1]
-                        consumer_secret = row[2]
-            oauth = OAuth2(consumer_key, consumer_secret)
-            pickle.dump(oauth, open(self.oauth_path, "wb"))
-            return oauth
 
     @staticmethod
     def cleanup_name(x: str) -> str:
@@ -216,7 +215,7 @@ class Roster:
             -1 if injured
         """
 
-        _, status, _, elig, _, _, _team, *_ = self.roster.loc[player,]
+        _, status, _, elig, _, _, _team, *_ = self.roster.loc[player, ]
         if status in ("IL", "NA"):
             return -1
         if status == "DTD":
@@ -310,3 +309,10 @@ class Roster:
             except RuntimeError:
                 print("Failed (?): {player_id} to {selected_position}".format(**pos))
 
+
+if __name__ == "__main__":
+    token = update_oauth()
+    key = find_league_key(token, 'mlb', "Chemical Hydrolysis League")
+    ros = Roster(key)
+    opt = ros.optimize_lineup()
+    ros.set_lineup(opt)
