@@ -1,6 +1,12 @@
 # Credentials
 oauth*
+
+# Data
 *.csv
+
+set-lineup.sh
+*.log
+.idea/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,15 +1,14 @@
-#!/home/colin/projects/yahoo-fantasy/venv/bin/python3
-
 import csv
 import json
 from yahoo_oauth import OAuth2
-import logging
 import mlbgame
 import yahoo_fantasy_api as yfa
 import pandas as pd
 from unidecode import unidecode
 from datetime import datetime, timedelta
 import numpy as np
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 LEAGUE = "Chemical Hydrolysis League"  # League to optimize
 
@@ -86,6 +85,17 @@ def update_oauth(path='oauth.json') -> OAuth2:
 class Roster:
 
     def __init__(self, league_key, oauth_path="oauth.json"):
+        # Setup the logger
+        self.logger = logging.getLogger('yahoo-fantasy')
+        formatter = logging.Formatter('%(asctime)7s - %(name)s - %(levelname)s - %(message)s')
+
+        # Write a log file for everything DEBUG and up
+        self.logger.setLevel(logging.DEBUG)
+
+        # Rotate the log files at midnight, keep a week's worth of logging
+        fh = logging.handlers.TimedRotatingFileHandler(filename='set_lineup.log', when='midnight', backupCount=2)
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
 
         # Create and confirm that OAuth2 token is updated
         self.oauth = update_oauth(oauth_path)
@@ -93,24 +103,31 @@ class Roster:
 
         # Create the Yahoo Fantasy abstraction
         self.league_key = league_key
+        self.logger.info("Getting league info...")
         self.league = yfa.league.League(self.oauth, league_key)
         self.positions = self.league.positions()
+        self.logger.info("Getting team info...")
         self.team = yfa.team.Team(self.oauth, self.league.team_key())
         # self.when = self.league.edit_date()  # The next time the roster can be edited
         if datetime.now().hour < 12:
             self.when = datetime.today()
         else:
             self.when = datetime.today() + timedelta(days=1)
+        self.logger.info("Updating lineup for {}".format(self.when.date()))
 
         # Fetches the probable starters and teams from MLB GameDay API
         self.probables = self.fetch_probables()
 
         # WAR projections for each player that are used to break ties
         # Define where to find WAR projections for each player
+        batter_value_path = "data/proj_steamer_2020_b.csv"
+        pitcher_value_path = "data/proj_steamer_2020_p.csv"
+
+        self.logger.info("Valuing players...")
         player_values = pd.read_csv(
-            "data/proj_steamer_2020_b.csv"  # Batter projections
+              batter_value_path # Batter projections
         ).append(pd.read_csv(
-            "data/proj_steamer_2020_p.csv"))  # Pitcher projections
+            pitcher_value_path))  # Pitcher projections
 
         # If there are two players with the same name, only keep the
         # the player with the most projected ABs or IPs
@@ -123,6 +140,7 @@ class Roster:
         self.player_values = player_values.set_index('name')[['WAR']]
 
         # A "roster" is all of the players that are on a team
+        self.logger.info("Fetching current roster...")
         roster = pd.DataFrame(self.team.roster())
         roster['name'] = roster['name'].map(self.cleanup_name)
         roster = roster.set_index('name')
@@ -133,6 +151,7 @@ class Roster:
         self.roster['team'] = [self.league.player_details(x)[0]["editorial_team_abbr"]
                                for x in self.roster['player_id']]
 
+        self.logger.info("Determining likely starters for {}...".format(self.when.date()))
         # Determine whether each player on the roster is playing
         self.roster['is_playing'] = [self.is_playing(player) for player in self.roster.index]
 
@@ -265,7 +284,9 @@ class Roster:
                     # If there's only one eligible player, cut to the chase and assign him
                     if len(eligible_players) == 1:
                         lineup.loc[index, 'final_player'] = eligible_players[0]
-                        print("Assigning", eligible_players[0], "to", lineup.loc[index, 'pos'])
+                        self.logger.info("Assigning {player} to {pos}".format(
+                            player=eligible_players[0],
+                            pos=lineup.loc[index, 'pos']))
                         assigned_players = [player for player in lineup.final_player if player is not None]
 
             # Perform tiebreakers based on expected value
@@ -278,9 +299,11 @@ class Roster:
             tb = tb.assign(value=tb.is_playing * tb.WAR)  # Approximate their value
             try:
                 best = tb.index[tb.value == max(tb.value)][0]  # Player with highest value
-                print("Assigning", best, "to", lineup.pos[tb_row])
+                self.logger.info("Optimizing {player} to {pos}".format(
+                    player=best,
+                    pos=lineup.pos[tb_row]))
             except IndexError:
-                print("Failed assigning {}".format(lineup.pos[tb_row]))
+                self.logger.warning("Failed assigning {}".format(lineup.pos[tb_row]))
 
             lineup.final_player[tb_row] = best
             assigned_players = [player for player in lineup['final_player'].unique() if player is not None]
@@ -307,7 +330,7 @@ class Roster:
 
         """
 
-        target = target.rename(columns={"selected_position": "c_pos",
+        target = target.rename(columns={"current_position": "c_pos",
                                         "target_position": "t_pos",
                                         "player_id": "pid"})
 
@@ -326,9 +349,10 @@ class Roster:
                 try:
                     swap_dict = [{"player_id": int(row.pid), "selected_position": row.t_pos}]
                     self.team.change_positions(self.when, swap_dict)  # Bench them first
-                    print("Success: Switched {} {} -> {}".format(name, row.c_pos, row.t_pos))
-                except RuntimeError:
-                    print("Failed: Switched {} {} -> {}".format(name, row.c_pos, row.t_pos))
+                    self.logger.info("Success: Switched {} {} -> {}".format(name, row.c_pos, row.t_pos))
+                except RuntimeError as e:
+                    self.logger.warning("Failed: Switched {} {} -> {}".format(name, row.c_pos, row.t_pos))
+                    self.logger.warning(e)
             else:
                 try:
                     # For all of the players that need to move, start by moving them to the bench
@@ -336,9 +360,10 @@ class Roster:
                     self.team.change_positions(self.when, bench_dict)  # Bench them first
                     # Keep a list of the players that need to be moved back from the bench
                     move_back.append((name, row.pid, row.c_pos, row.t_pos))
-                    print("Success: {} ({}) to BN".format(name, row.c_pos))
-                except RuntimeError:
-                    print("Failed: {} to BN".format(name))
+                    self.logger.info("Success: {} ({} -> {}) to BN".format(name, row.c_pos, row.t_pos))
+                except RuntimeError as e:
+                    self.logger.warning("Failed: {} ({} -> {}) to BN".format(name, row.c_pos, row.t_pos))
+                    self.logger.warning(e)
 
         # For the players that we moved to the bench, move them back to the target position
         for move in move_back:
@@ -348,9 +373,10 @@ class Roster:
             try:
                 move_dict = [{"player_id": int(pid), "selected_position": t_pos}]
                 self.team.change_positions(self.when, move_dict)  # Bench them first
-                print("Success: {} ({}) to {}".format(name, c_pos, t_pos))
-            except RuntimeError:
-                print("Failed: {} ({}) to {}".format(name, c_pos, t_pos))
+                self.logger.info("Success: {} ({}) to {}".format(name, c_pos, t_pos))
+            except RuntimeError as e:
+                self.logger.warning("Failed: {} ({}) to {}".format(name, c_pos, t_pos))
+                self.logger.warning(e)
 
 
 if __name__ == "__main__":
