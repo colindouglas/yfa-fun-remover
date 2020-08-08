@@ -10,9 +10,6 @@ import numpy as np
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
-LEAGUE = "Chemical Hydrolysis League"  # League to optimize
-
-
 def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
     """
     Get the key of a league by name
@@ -44,6 +41,20 @@ def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
                 return details['league_key']
             print("Can't find league '{}'".format(league_name))
             return ""
+
+
+def earliest_game() -> int:
+    """
+    Queries the MLB GameDay API for the start time of all of today's games.
+
+    :return: the hour of the start time of the earliest game today
+    """
+    when = datetime.today()
+    games = mlbgame.day(when.year, when.month, when.day)
+    start_times = []  # Hour that game starts, Eastern
+    for game in games:
+        start_times.append(game.date.hour)
+    return min(start_times)
 
 
 def update_oauth(path='oauth.json') -> OAuth2:
@@ -93,7 +104,7 @@ class Roster:
         self.logger.setLevel(logging.DEBUG)
 
         # Rotate the log files at midnight, keep a week's worth of logging
-        fh = logging.handlers.TimedRotatingFileHandler(filename='set_lineup.log', when='midnight', backupCount=2)
+        fh = logging.handlers.TimedRotatingFileHandler(filename='set_lineup.log', when='midnight', backupCount=1)
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
 
@@ -108,8 +119,9 @@ class Roster:
         self.positions = self.league.positions()
         self.logger.info("Getting team info...")
         self.team = yfa.team.Team(self.oauth, self.league.team_key())
-        # self.when = self.league.edit_date()  # The next time the roster can be edited
-        if datetime.now().hour < 12:
+
+        # Stop optimizing today's roster an hour before the first game starts
+        if earliest_game() > datetime.now().hour + 1:
             self.when = datetime.today()
         else:
             self.when = datetime.today() + timedelta(days=1)
@@ -125,7 +137,7 @@ class Roster:
 
         self.logger.info("Valuing players...")
         player_values = pd.read_csv(
-              batter_value_path # Batter projections
+              batter_value_path   # Batter projections
         ).append(pd.read_csv(
             pitcher_value_path))  # Pitcher projections
 
@@ -233,6 +245,21 @@ class Roster:
         o["teams"] = teams
         return o
 
+    def refresh_token(self) -> None:
+        """
+        Refreshes the OAuth token in a Roster without without returning anything
+
+        :return: Nadda
+        """
+        if self.oauth.token_is_valid():
+            return
+        else:
+            self.oauth.refresh_access_token()
+            # https://github.com/josuebrunel/yahoo-oauth/issues/55#issuecomment-602217706
+            self.oauth.session = self.oauth.oauth.get_session(token=self.oauth.access_token)
+            # Apparently this is a bug
+            return
+
     def is_playing(self, player: str) -> int:
         """
         Determines whether a player is playing, based on the probables
@@ -312,6 +339,7 @@ class Roster:
         o['pos'] = o['pos'].fillna("BN")
         o = o.rename(columns={"pos": "target_position",
                               "selected_position": "current_position"})
+        self.logger.info("Finished optimizing lineup!")
         return o
 
     def set_lineup(self, target: pd.DataFrame) -> None:
@@ -377,9 +405,11 @@ class Roster:
             except RuntimeError as e:
                 self.logger.warning("Failed: {} ({}) to {}".format(name, c_pos, t_pos))
                 self.logger.warning(e)
+        self.logger.info("Finished setting lineup! -----------------")
 
 
 if __name__ == "__main__":
+    LEAGUE = "Chemical Hydrolysis League"
     token = update_oauth()
     key = find_league_key(token, 'mlb', LEAGUE)
     ros = Roster(key)
