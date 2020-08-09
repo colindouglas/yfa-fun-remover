@@ -10,6 +10,7 @@ import numpy as np
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
+
 def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
     """
     Get the key of a league by name
@@ -104,7 +105,7 @@ class Roster:
         self.logger.setLevel(logging.DEBUG)
 
         # Rotate the log files at midnight, keep a week's worth of logging
-        fh = logging.handlers.TimedRotatingFileHandler(filename='set_lineup.log', when='midnight', backupCount=1)
+        fh = logging.handlers.TimedRotatingFileHandler(filename='lineup.log', when='D', interval=2, backupCount=1)
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
 
@@ -153,7 +154,7 @@ class Roster:
 
         # A "roster" is all of the players that are on a team
         self.logger.info("Fetching current roster...")
-        roster = pd.DataFrame(self.team.roster())
+        roster = pd.DataFrame(self.team.roster(day=self.when))
         roster['name'] = roster['name'].map(self.cleanup_name)
         roster = roster.set_index('name')
         # Join the values for each player
@@ -405,7 +406,7 @@ class Roster:
             except RuntimeError as e:
                 self.logger.warning("Failed: {} ({}) to {}".format(name, c_pos, t_pos))
                 self.logger.warning(e)
-        self.logger.info("Finished setting lineup! -----------------")
+        self.logger.info("Finished setting lineup!")
 
 
 if __name__ == "__main__":
