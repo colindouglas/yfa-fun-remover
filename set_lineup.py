@@ -131,34 +131,17 @@ class Roster:
         # Fetches the probable starters and teams from MLB GameDay API
         self.probables = self.fetch_probables()
 
-        # WAR projections for each player that are used to break ties
-        # Define where to find WAR projections for each player
-        batter_value_path = "data/proj_steamer_2020_b.csv"
-        pitcher_value_path = "data/proj_steamer_2020_p.csv"
-
-        self.logger.info("Valuing players...")
-        player_values = pd.read_csv(
-              batter_value_path   # Batter projections
-        ).append(pd.read_csv(
-            pitcher_value_path))  # Pitcher projections
-
-        # If there are two players with the same name, only keep the
-        # the player with the most projected ABs or IPs
-        player_values = player_values.sort_values(by=['AB', 'IP'])
-        player_values = player_values.drop_duplicates(subset=['Name'], keep='last')
-
-        # Clean up the names
-        player_values['name'] = player_values['Name'].map(self.cleanup_name)
-        player_values['WAR'] = player_values['WAR'].fillna(0.1)  # Value unknowns slightly more than known nothings
-        self.player_values = player_values.set_index('name')[['WAR']]
-
         # A "roster" is all of the players that are on a team
         self.logger.info("Fetching current roster...")
         roster = pd.DataFrame(self.team.roster(day=self.when))
+
+        # Clean up the player names
         roster['name'] = roster['name'].map(self.cleanup_name)
-        roster = roster.set_index('name')
-        # Join the values for each player
-        self.roster = roster.join(self.player_values, how='left')
+
+        # Assign an approximate value to each player
+        roster['value'] = self.value_players(roster['name'], how="steamer")
+
+        self.roster = roster.set_index('name')
 
         # Ask Yahoo which team each player plays for
         self.roster['team'] = [self.league.player_details(x)[0]["editorial_team_abbr"]
@@ -324,7 +307,7 @@ class Roster:
                 lineup.final_player[tb_row] = "Empty"
                 continue
             tb = self.roster[self.roster.index.isin(lineup.eligible_players[tb_row])]  # Filter roster for those players
-            tb = tb.assign(value=tb.is_playing * tb.WAR)  # Approximate their value
+            tb = tb.assign(value=tb.is_playing * tb.value)  # Approximate their value
             try:
                 best = tb.index[tb.value == max(tb.value)][0]  # Player with highest value
                 self.logger.info("Optimizing {player} to {pos}".format(
@@ -407,6 +390,35 @@ class Roster:
                 self.logger.warning("Failed: {} ({}) to {}".format(name, c_pos, t_pos))
                 self.logger.warning(e)
         self.logger.info("Finished setting lineup!")
+
+    def value_players(self, names, how="steamer"):
+
+        # Value players based on their 2020 Steamer Projections
+        if how == "steamer":
+            self.logger.info('Valuing players by method "{}"...'.format(how))
+            # WAR projections for each player that are used to break ties
+            # Define where to find WAR projections for each player
+            batter_value_path = "data/proj_steamer_2020_b.csv"
+            pitcher_value_path = "data/proj_steamer_2020_p.csv"
+
+            player_values = pd.read_csv(
+                batter_value_path  # Batter projections
+            ).append(pd.read_csv(
+                pitcher_value_path))  # Pitcher projections
+
+            # If there are two players with the same name, only keep the
+            # the player with the most projected ABs or IPs
+            player_values = player_values.sort_values(by=['AB', 'IP'])
+            player_values = player_values.drop_duplicates(subset=['Name'], keep='last')
+
+            # Clean up the names
+            player_values['name'] = player_values['Name'].map(self.cleanup_name)
+            player_values['WAR'] = player_values['WAR'].fillna(0.1)  # Value unknowns slightly more than known nothings
+
+            return player_values['WAR'][player_values.name.isin(names)].tolist()
+        else:
+            self.logger.info('Don\'t know how to value players by "{}"'.format(how))
+            return None
 
 
 if __name__ == "__main__":
