@@ -11,6 +11,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 
+
 def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
     """
     Get the key of a league by name
@@ -96,7 +97,7 @@ def update_oauth(path='oauth.json') -> OAuth2:
 
 class Roster:
 
-    def __init__(self, league_key, oauth_path="oauth.json"):
+    def __init__(self, league_key, values="steamer", oauth_path="oauth.json"):
         # Setup the logger
         self.logger = logging.getLogger('yahoo-fantasy')
         formatter = logging.Formatter('%(asctime)7s - %(name)s - %(levelname)s - %(message)s')
@@ -133,15 +134,15 @@ class Roster:
 
         # A "roster" is all of the players that are on a team
         self.logger.info("Fetching current roster...")
-        roster = pd.DataFrame(self.team.roster(day=self.when))
+        self.roster = pd.DataFrame(self.team.roster(day=self.when))
 
         # Clean up the player names
-        roster['name'] = roster['name'].map(self.cleanup_name)
+        self.roster['name'] = self.roster['name'].map(self.cleanup_name)
 
         # Assign an approximate value to each player
-        roster['value'] = self.value_players(roster['name'], how="steamer")
+        self.roster['value'] = self.value_players(how=values)
 
-        self.roster = roster.set_index('name')
+        self.roster = self.roster.set_index('name')
 
         # Ask Yahoo which team each player plays for
         self.roster['team'] = [self.league.player_details(x)[0]["editorial_team_abbr"]
@@ -391,11 +392,11 @@ class Roster:
                 self.logger.warning(e)
         self.logger.info("Finished setting lineup!")
 
-    def value_players(self, names, how="steamer"):
-
+    def value_players(self, how="magic", log = True):
+        if log:
+            self.logger.info('Valuing players by "{}" method...'.format(how))
         # Value players based on their 2020 Steamer Projections
         if how == "steamer":
-            self.logger.info('Valuing players by method "{}"...'.format(how))
             # WAR projections for each player that are used to break ties
             # Define where to find WAR projections for each player
             batter_value_path = "data/proj_steamer_2020_b.csv"
@@ -415,7 +416,65 @@ class Roster:
             player_values['name'] = player_values['Name'].map(self.cleanup_name)
             player_values['WAR'] = player_values['WAR'].fillna(0.1)  # Value unknowns slightly more than known nothings
 
-            return player_values['WAR'][player_values.name.isin(names)].tolist()
+            return player_values['WAR'][player_values['name'].isin(self.roster["name"])].tolist()
+
+        if how == "lastmonth":
+            pids = [pid for pid in self.roster['player_id']]
+            stats = pd.DataFrame(self.league.player_stats(pids, req_type='lastmonth'))
+            values = []
+            for ops, era in zip(stats['OPS'], stats['ERA']):
+                if not np.isnan(ops):
+                    values.append(ops)
+                elif era == 0:
+                    values.append(100)
+                else:
+                    values.append(1/era)
+            return values
+
+        if how == "season":
+            pids = [pid for pid in self.roster['player_id']]
+            stats = pd.DataFrame(self.league.player_stats(pids, req_type='season'))
+            values = []
+            for wRAA, fip in zip(stats['wRAA'], stats['FIP']):
+                if not np.isnan(wRAA):
+                    values.append(wRAA)
+                elif fip == 0:
+                    values.append(100)
+                else:
+                    values.append(1/fip)
+            return values
+
+        if how == "magic":
+
+            def mad(x):
+                """
+                Median absolute deviation
+                (like a standard deviation except for non-parametric data)
+                """
+                x = np.array(x)
+                return np.median(abs(x - np.median(x)))
+
+            def norm_np(x):
+                """
+                Normalize a vector non-parametrically
+                (distance from the median in MAD units)
+                """
+                x = np.array(x)
+                return (x - np.median(x))/mad(x)
+
+            week = self.league.current_week()
+            total_weeks = 9  # Only valid for shortened 2020 season
+            weight_season = (week/total_weeks * 0.75 + 0.25) * 1/2
+            weight_month = (week/total_weeks * 0.75 + 0.25) * 1/2
+            weight_proj = 1 - weight_season - weight_month
+
+            # Calculate weights for season stats, this month stats, and steamer projections
+            this_season = norm_np(self.value_players("season", log=False)) * weight_season
+            this_month = norm_np(self.value_players("lastmonth", log=False)) * weight_month
+            projections = norm_np(self.value_players("steamer", log=False)) * weight_proj
+
+            return this_season + this_month + projections
+
         else:
             self.logger.info('Don\'t know how to value players by "{}"'.format(how))
             return None
@@ -425,6 +484,6 @@ if __name__ == "__main__":
     LEAGUE = "Chemical Hydrolysis League"
     token = update_oauth()
     key = find_league_key(token, 'mlb', LEAGUE)
-    ros = Roster(key)
+    ros = Roster(key, values="magic")
     opt = ros.optimize_lineup()
     ros.set_lineup(opt)
