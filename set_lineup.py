@@ -11,7 +11,6 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 
-
 def find_league_key(oauth: OAuth2, code: str, league_name: str = None) -> str:
     """
     Get the key of a league by name
@@ -499,13 +498,17 @@ class Roster:
                 x = np.array(x)
                 return np.median(abs(x - np.median(x)))
 
-            def norm_np(x):
+            def norm_np(x, center=3):
                 """
                 Normalize a vector non-parametrically
                 (distance from the median in MAD units)
+
+                'center' helps prevent really bad players from being started
+                e.g., center=3 means a player that is three MAD units below the median
+                (99th percentile bad) will never be a starter, since his value is negative
                 """
                 x = np.array(x)
-                return (x - np.median(x))/mad(x)
+                return (x - np.median(x))/mad(x) + center
 
             week = self.league.current_week()
             total_weeks = 9  # Only valid for shortened 2020 season
