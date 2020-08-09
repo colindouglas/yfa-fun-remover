@@ -392,11 +392,33 @@ class Roster:
                 self.logger.warning(e)
         self.logger.info("Finished setting lineup!")
 
-    def value_players(self, how="magic", log = True):
+    def value_players(self, how="magic", log=True):
+        """
+        Value players according to one of:
+            * steamer - uses projections loaded as a CSV
+            * lastmonth - uses the player's stats in the last month from Yahoo
+            * season - uses the player's stats for the current season from Yahoo
+            * magic - a weighted combination of the above three
+
+        :param how: The method through which value is assigned to a player
+        :param log: Whether to add a line to the logger (so recursive calls can be silent)
+        :return: a list of player values that correspond to the players in self.roster
+        """
         if log:
             self.logger.info('Valuing players by "{}" method...'.format(how))
-        # Value players based on their 2020 Steamer Projections
+
         if how == "steamer":
+
+            """
+            Players are assigned value according to their Steamer WAR projections
+            
+            The projections must be including in the working directory as CSV.
+            The CSV should have at least two columns
+                * the player's name (as 'Name')
+                * a representation of the player's value (as 'WAR')
+            
+            """
+
             # WAR projections for each player that are used to break ties
             # Define where to find WAR projections for each player
             batter_value_path = "data/proj_steamer_2020_b.csv"
@@ -419,6 +441,13 @@ class Roster:
             return player_values['WAR'][player_values['name'].isin(self.roster["name"])].tolist()
 
         if how == "lastmonth":
+            """
+            Players are valued based on how well they've performed in the last month.
+            
+            Batters are assigned valuing according to their OPS
+            Pitchers are assigned value according to 1/ERA (if ERA = 0, use 100)
+            """
+
             pids = [pid for pid in self.roster['player_id']]
             stats = pd.DataFrame(self.league.player_stats(pids, req_type='lastmonth'))
             values = []
@@ -432,6 +461,14 @@ class Roster:
             return values
 
         if how == "season":
+            """
+            Value a player based on how well they've performed this season, using
+            more advanced metrics than "lastmonth".
+            
+            For batters, players are valued by wRAA (weighted runs above average)
+            For pitchers, players are valued by 1/FIP (if FIP == 0, then we use 100)
+            """
+
             pids = [pid for pid in self.roster['player_id']]
             stats = pd.DataFrame(self.league.player_stats(pids, req_type='season'))
             values = []
@@ -445,6 +482,14 @@ class Roster:
             return values
 
         if how == "magic":
+
+            """
+            Value a player using a combination of all of the other methods
+        
+            Initially, the Steamer projections are used to assign most of
+            a player's value. As the season goes on, the current season/last month
+            weights become more important to the valuation.
+                """
 
             def mad(x):
                 """
